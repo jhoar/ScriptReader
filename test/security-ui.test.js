@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { ChatterboxServerEngine } from '../src/audio/chatterbox-server-engine.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { createResumeToastElement } from '../src/ui/resume-toast.js';
@@ -230,6 +231,78 @@ test('RunPod validation preserves keyboard focus through loading and success', a
     assert.match(modal.textContent, /Connected to RunPod/);
   } finally {
     globalThis.fetch = originalFetch;
+    removeDom(dom);
+  }
+});
+
+test('Local GPU connection test preserves URL and keyboard focus after discovery', async () => {
+  const dom = installDom();
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify([{ display_name: 'Emily', filename: 'Emily.wav' }]));
+    const modal = createEngineSettingsModal({ audioManager: { engineId: ENGINE_IDS.CHATTERBOX_SERVER } });
+    document.body.appendChild(modal);
+    const input = modal.querySelector('#chatterbox-server-url');
+    input.value = 'http://localhost:8004/';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const button = modal.querySelector('#btn-test-chatterbox-server');
+    button.focus();
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(document.activeElement.id, 'btn-test-chatterbox-server');
+    assert.equal(modal.querySelector('#chatterbox-server-url').value, 'http://localhost:8004/');
+    assert.match(modal.textContent, /1 voice available/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    removeDom(dom);
+  }
+});
+
+test('a discovered server voice can be assigned and saved for a character', async () => {
+  const dom = installDom();
+  localStorage.setItem(
+    'scriptreader_chatterbox_voice_metadata',
+    JSON.stringify([{ id: 'studio-alice', name: 'My Studio Alice', createdAt: 7, duration: 5 }]),
+  );
+  const engine = new ChatterboxServerEngine({
+    getEndpoint: () => 'http://localhost:8004',
+    fetchImpl: async () => new Response(JSON.stringify([{ display_name: 'Emily', filename: 'Emily.wav' }])),
+    renderStore: null,
+  });
+  try {
+    await engine.init();
+    let savedCast;
+    const scriptStore = {
+      currentScript: {
+        title: 'Local GPU cast',
+        characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }],
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'Emily.wav',
+      updateCast: ({ castAssignments }) => {
+        savedCast = castAssignments;
+      },
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.CHATTERBOX_SERVER,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'Emily.wav' }),
+      stop() {},
+      setNarratorVoice() {},
+      setVoiceAssignment() {},
+    };
+    const modal = createVoiceConfigModal({ scriptStore, audioManager });
+    document.body.appendChild(modal);
+    const select = modal.querySelector('.modal-char-select[data-char="ALICE"]');
+    assert.ok(select.querySelector('option[value="Emily.wav"]'));
+    assert.ok(select.querySelector('option[value="studio-alice"]'));
+    select.value = 'studio-alice';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    modal.querySelector('#btn-modal-save').click();
+    assert.equal(savedCast.get('ALICE').voiceIds[ENGINE_IDS.CHATTERBOX_SERVER], 'studio-alice');
+  } finally {
+    engine.release();
     removeDom(dom);
   }
 });

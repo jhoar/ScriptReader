@@ -1,19 +1,24 @@
 import { CHATTERBOX_DOWNLOAD_BYTES, clearChatterboxCache } from '../audio/chatterbox-engine.js';
+import { ChatterboxServerEngine } from '../audio/chatterbox-server-engine.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { ModelCacheManager } from '../audio/model-cache-manager.js';
 import {
   clearOpenAIKey,
   clearRunPodKey,
+  DEFAULT_CHATTERBOX_SERVER_ENDPOINT,
   DEFAULT_RUNPOD_ENDPOINT,
   describeRunPodValidationReason,
   describeValidationReason,
   grantCloudConsent,
   hasCloudConsent,
+  loadChatterboxServerEndpoint,
   loadOpenAIKey,
   loadRunPodEndpointId,
   loadRunPodKey,
   maskKey,
+  normalizeChatterboxServerEndpoint,
   revokeCloudConsent,
+  saveChatterboxServerEndpoint,
   saveOpenAIKey,
   saveRunPodEndpointId,
   saveRunPodKey,
@@ -80,6 +85,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
   const isCloud = () => selectedEngine === ENGINE_IDS.OPENAI;
   const isStudio = () => selectedEngine === ENGINE_IDS.CHATTERBOX;
+  const isLocalGpu = () => selectedEngine === ENGINE_IDS.CHATTERBOX_SERVER;
   const isRunPod = () => selectedEngine === ENGINE_IDS.RUNPOD;
   let validatingRunPod = false;
   let runpodValidationMessage = '';
@@ -90,6 +96,11 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   const initialRunPodEndpoint = loadRunPodEndpointId() || DEFAULT_RUNPOD_ENDPOINT;
   let runpodKeyDraft = initialRunPodKey;
   let runpodEndpointDraft = initialRunPodEndpoint;
+  let serverEndpointDraft = loadChatterboxServerEndpoint();
+  let serverMessage = '';
+  let serverOk = null;
+  let serverTestController = null;
+  let serverTestGeneration = 0;
   let hasRendered = false;
   // Straight off the class rather than through `audioManager.modelCacheManager`:
   // formatting a byte count needs no manager instance, and reaching for one at
@@ -97,7 +108,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   const formatBytes = (bytes) => ModelCacheManager.formatBytes(bytes);
   const downloadSize = formatBytes(CHATTERBOX_DOWNLOAD_BYTES);
   const focusRenderer = createFocusPreservingRenderer(modal, {
-    valueSelectors: ['#openai-key-input', '#runpod-key-input', '#runpod-endpoint-input'],
+    valueSelectors: ['#openai-key-input', '#runpod-key-input', '#runpod-endpoint-input', '#chatterbox-server-url'],
     scrollSelectors: ['.modal-body'],
     fallback: ({ findByIdentity, focusables }) =>
       findByIdentity('id:btn-test-runpod-key') || findByIdentity('id:btn-engine-apply') || focusables()[0],
@@ -232,6 +243,30 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
               }
             </div>
           `
+              : ''
+          }
+
+          <label class="engine-option ${isLocalGpu() ? 'selected' : ''}" data-engine="${ENGINE_IDS.CHATTERBOX_SERVER}"
+                 style="display:block;padding:14px;border-radius:10px;cursor:pointer;border:1px solid ${isLocalGpu() ? 'var(--brass)' : 'var(--border)'};background:${isLocalGpu() ? 'var(--brass-soft)' : 'transparent'};">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <input type="radio" name="engine" value="${ENGINE_IDS.CHATTERBOX_SERVER}" data-focus-key="engine-chatterbox-server" ${isLocalGpu() ? 'checked' : ''}>
+              <strong>Local GPU</strong><span class="badge-voice">Chatterbox Server</span>
+            </div>
+            <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px;">
+              Uses Chatterbox-TTS-Server on this computer. Speech runs on the local GPU. Studio reference recordings are uploaded to the configured server when first used.
+            </div>
+          </label>
+          ${
+            isLocalGpu()
+              ? `
+            <div class="studio-install-panel">
+              <label for="chatterbox-server-url">Server URL</label>
+              <div style="display:flex;gap:8px;">
+                <input id="chatterbox-server-url" type="url" value="${escapeHtml(serverEndpointDraft)}" placeholder="${DEFAULT_CHATTERBOX_SERVER_ENDPOINT}" style="flex:1;">
+                <button id="btn-test-chatterbox-server" class="btn btn-secondary" type="button">Test connection</button>
+              </div>
+              ${serverMessage ? `<div class="engine-settings-message ${serverOk ? 'is-success' : 'is-error'}" role="status">${escapeHtml(serverMessage)}</div>` : ''}
+            </div>`
               : ''
           }
 
@@ -477,6 +512,8 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
   function close() {
     closed = true;
+    serverTestGeneration++;
+    serverTestController?.abort();
     runpodValidationGeneration++;
     runpodValidationController?.abort();
     runpodValidationController = null;
@@ -550,6 +587,36 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     modal.querySelector('#btn-manage-local-model')?.addEventListener('click', () => {
       modal.remove();
       onOpenModelHub();
+    });
+
+    modal.querySelector('#chatterbox-server-url')?.addEventListener('input', (event) => {
+      serverEndpointDraft = event.target.value;
+      serverMessage = '';
+      serverOk = null;
+    });
+    modal.querySelector('#btn-test-chatterbox-server')?.addEventListener('click', async () => {
+      serverTestController?.abort();
+      const controller = new AbortController();
+      serverTestController = controller;
+      const generation = ++serverTestGeneration;
+      try {
+        const endpoint = normalizeChatterboxServerEndpoint(serverEndpointDraft);
+        const probe = new ChatterboxServerEngine({
+          getEndpoint: () => endpoint,
+          fetchImpl: (url, options) => fetch(url, { ...options, signal: controller.signal }),
+          renderStore: null,
+          publishVoices: false,
+        });
+        await probe.init();
+        if (closed || generation !== serverTestGeneration) return;
+        serverMessage = probe.statusMessage;
+        serverOk = true;
+      } catch (error) {
+        if (closed || generation !== serverTestGeneration) return;
+        serverMessage = error?.message || 'Could not connect to Chatterbox.';
+        serverOk = false;
+      }
+      render();
     });
 
     modal.querySelectorAll('input[name="engine"]').forEach((radio) => {
@@ -756,6 +823,31 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   async function onApply() {
     if (isStudio() && !(await installStudio())) return;
 
+    let serverConfigChanged = false;
+    if (isLocalGpu()) {
+      try {
+        serverEndpointDraft = normalizeChatterboxServerEndpoint(serverEndpointDraft);
+      } catch (error) {
+        serverMessage = error.message;
+        serverOk = false;
+        render();
+        return;
+      }
+      serverConfigChanged = serverEndpointDraft !== loadChatterboxServerEndpoint();
+      if (serverConfigChanged) {
+        saveChatterboxServerEndpoint(serverEndpointDraft);
+        audioManager.getEngine(ENGINE_IDS.CHATTERBOX_SERVER)?.release?.();
+      }
+      try {
+        await audioManager.getEngine(ENGINE_IDS.CHATTERBOX_SERVER).init();
+      } catch (error) {
+        serverMessage = error.message;
+        serverOk = false;
+        render();
+        return;
+      }
+    }
+
     const runPodConfigChanged =
       isRunPod() &&
       (runpodKeyDraft.trim() !== initialRunPodKey.trim() ||
@@ -768,6 +860,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     if (selectedEngine !== audioManager.engineId) {
       audioManager.setEngine(selectedEngine);
       if (onEngineChanged) onEngineChanged(selectedEngine);
+    } else if (isLocalGpu()) {
+      if (serverConfigChanged) audioManager.refreshEngineConfiguration?.(ENGINE_IDS.CHATTERBOX_SERVER);
+      else audioManager.prewarm?.();
     } else if (runPodConfigChanged) {
       const engine = audioManager.getEngine?.(ENGINE_IDS.RUNPOD);
       engine?.release?.();

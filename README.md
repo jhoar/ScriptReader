@@ -144,6 +144,10 @@ speaker
 
 ## Running Locally
 
+### Local GPU with Chatterbox Server
+
+Run [Chatterbox-TTS-Server](https://github.com/devnen/Chatterbox-TTS-Server) on your computer, then select **Local GPU · Chatterbox Server** in Voice Engine settings. The default server URL is `http://localhost:8004`; use **Test connection** to discover its predefined voices. You can assign predefined voices or your existing Studio reference voices to characters. A Studio reference is uploaded to the configured server on first use and reused there on later renders. Replacing the recording uploads a new version. ScriptReader keeps playback and its local render cache; browser-based Studio Local remains available separately. Uploaded references remain on the Chatterbox server until you remove them there.
+
 To run the development server locally:
 
 ```bash

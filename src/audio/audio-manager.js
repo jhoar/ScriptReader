@@ -2,6 +2,7 @@ import { hasRunPodKey, loadEngineSettings, saveEngineSettings } from '../utils/c
 import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audio-context.js';
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
 import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
+import { ChatterboxServerEngine } from './chatterbox-server-engine.js';
 import { ENGINE_IDS } from './engine-contract.js';
 import { runExportJob } from './export-job.js';
 import { KokoroNeuralEngine } from './kokoro-engine.js';
@@ -20,6 +21,7 @@ import { WebSpeechEngine } from './web-speech-engine.js';
 export const ENGINE_TYPES = {
   KOKORO_NEURAL: ENGINE_IDS.KOKORO,
   CHATTERBOX: ENGINE_IDS.CHATTERBOX,
+  CHATTERBOX_SERVER: ENGINE_IDS.CHATTERBOX_SERVER,
   RUNPOD: ENGINE_IDS.RUNPOD,
   OPENAI: ENGINE_IDS.OPENAI,
   WEB_SPEECH: ENGINE_IDS.WEB_SPEECH,
@@ -60,6 +62,8 @@ const STUDIO_MIN_RUNWAY_SECONDS = 5 * 60;
 const STUDIO_RENDER_SAFETY_FACTOR = 0.8;
 const STUDIO_UNKNOWN_RENDER_RATE = 0;
 const DEFAULT_PREWARM_UNITS = 6;
+const isPersistentRenderEngine = (id) =>
+  id === ENGINE_IDS.CHATTERBOX || id === ENGINE_IDS.RUNPOD || id === ENGINE_IDS.CHATTERBOX_SERVER;
 
 // Audio banked before the first line plays, versus after recovering a stall.
 // Starting with a cushion is what turns "press play, hear a stutter" into
@@ -102,6 +106,7 @@ export class ScreenplayAudioManager {
     this._engines = new Map([
       [ENGINE_IDS.KOKORO, new KokoroNeuralEngine()],
       [ENGINE_IDS.CHATTERBOX, new ChatterboxStudioEngine()],
+      [ENGINE_IDS.CHATTERBOX_SERVER, new ChatterboxServerEngine()],
       [ENGINE_IDS.RUNPOD, new RunPodServerlessEngine()],
       [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()],
     ]);
@@ -167,7 +172,7 @@ export class ScreenplayAudioManager {
     // engine-native voices even when playback itself has not moved.
     this.prewarmGeneration = 0;
     this._preparedStudioKeys = new Set();
-    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+    const isStudioEngine = isPersistentRenderEngine(this.engineId);
     this.renderStatus = {
       visible: isStudioEngine,
       active: false,
@@ -285,6 +290,18 @@ export class ScreenplayAudioManager {
         console.warn('Kokoro background preload notice:', err);
       });
       return;
+    }
+
+    if (this.engineId === ENGINE_IDS.CHATTERBOX_SERVER) {
+      this.engine
+        .init()
+        .then(() => {
+          if (this.engineId !== ENGINE_IDS.CHATTERBOX_SERVER) return;
+          this._ensureEngineVoices();
+          this._invalidateUnits();
+          this.prewarm();
+        })
+        .catch((err) => console.warn('Local Chatterbox connection notice:', err));
     }
 
     if (this.engineId === ENGINE_IDS.RUNPOD) {
@@ -451,6 +468,17 @@ export class ScreenplayAudioManager {
     this.prewarm();
   }
 
+  /** Rebuild units after an active engine's endpoint or model settings change. */
+  refreshEngineConfiguration(engineId) {
+    if (engineId !== this.engineId) return;
+    this.stop();
+    this._preparedStudioKeys.clear();
+    this._narratorByEngine = {};
+    this._ensureEngineVoices();
+    this._invalidateUnits();
+    this.prewarm();
+  }
+
   /** @deprecated Use setEngine(). Kept so older callers keep working. */
   setEngineType(engineType) {
     this.setEngine(engineType);
@@ -558,7 +586,12 @@ export class ScreenplayAudioManager {
       if (!assignment) continue;
       if (!assignment.voiceIds) assignment.voiceIds = {};
 
-      if (assignment.voiceIds[this.engineId]) continue;
+      if (
+        assignment.voiceIds[this.engineId] &&
+        (this.engineId !== ENGINE_IDS.CHATTERBOX_SERVER ||
+          getVoicesForEngine(this.engineId).some((voice) => voice.id === assignment.voiceIds[this.engineId]))
+      )
+        continue;
 
       // The legacy single-engine field is always a Kokoro id; treat it as this
       // character's Kokoro casting rather than reinterpreting it under whichever
@@ -567,8 +600,14 @@ export class ScreenplayAudioManager {
         assignment.voiceIds[ENGINE_IDS.KOKORO] = assignment.voiceId;
       }
 
+      const studioVoice = assignment.voiceIds[ENGINE_IDS.CHATTERBOX];
       const source = assignment.voiceIds[ENGINE_IDS.KOKORO] || assignment.voiceId;
-      const mapped = mapVoiceAcrossEngines(source, this.engineId, used);
+      const mapped =
+        this.engineId === ENGINE_IDS.CHATTERBOX_SERVER &&
+        studioVoice &&
+        getVoicesForEngine(this.engineId).some((voice) => voice.id === studioVoice)
+          ? studioVoice
+          : mapVoiceAcrossEngines(source, this.engineId, used);
       assignment.voiceIds[this.engineId] = mapped;
       used.add(mapped);
     }
@@ -851,7 +890,7 @@ export class ScreenplayAudioManager {
     // Everything past the current cluster would be built from units that no
     // longer describe this cast, so the file would change voice halfway down.
     this.cancelExport('The cast or pacing changed, so the export was stopped.');
-    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+    const isStudioEngine = isPersistentRenderEngine(this.engineId);
     if (isStudioEngine) {
       const label = this.engine?.capabilities?.label || 'Studio';
       this._setRenderStatus({
@@ -1371,7 +1410,7 @@ export class ScreenplayAudioManager {
     const engine = this.engine;
     const unitGeneration = this.prewarmGeneration;
 
-    if (this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD) {
+    if (isPersistentRenderEngine(this.engineId)) {
       const active = this._studioPrewarmTask;
       if (active && active.engine === engine && active.unitGeneration === unitGeneration) {
         return active.promise;
@@ -1415,6 +1454,12 @@ export class ScreenplayAudioManager {
           const status = await this.getChatterboxCacheStatus();
           if (!status.installed || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
           await engine.init();
+        } else if (this.engineId === ENGINE_IDS.CHATTERBOX_SERVER) {
+          await engine.init();
+          if (!this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+          this._ensureEngineVoices();
+          this.unitCache.clear();
+          this._narratorByEngine = {};
         } else if (this.engineId === ENGINE_IDS.RUNPOD) {
           const key = engine.getApiKey?.()?.trim();
           if (!key || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
@@ -1462,9 +1507,7 @@ export class ScreenplayAudioManager {
 
   _ownsStudioPrewarm(engine, unitGeneration) {
     return (
-      unitGeneration === this.prewarmGeneration &&
-      (this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD) &&
-      this.engine === engine
+      unitGeneration === this.prewarmGeneration && isPersistentRenderEngine(this.engineId) && this.engine === engine
     );
   }
 
@@ -1881,7 +1924,7 @@ export class ScreenplayAudioManager {
     // silently re-arms prewarm instead of resuming.
     const isPausedResume =
       this.playbackState === PLAYBACK_STATES.PAUSED && !this.usingWebSpeechFallback && this.engine.isReady;
-    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+    const isStudioEngine = isPersistentRenderEngine(this.engineId);
     if (!isPausedResume && isStudioEngine && !this.renderStatus.canPlay) {
       this.prewarm();
       return;
@@ -1999,7 +2042,7 @@ export class ScreenplayAudioManager {
     this.playGeneration++;
     if (!preservePrewarm) {
       this.prewarmGeneration++;
-      const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+      const isStudioEngine = isPersistentRenderEngine(this.engineId);
       if (isStudioEngine && this.scriptElements.length > 0) {
         const label = this.engine?.capabilities?.label || 'Studio';
         // `_setRenderStatus` is a shallow merge, so a percent left over from the
