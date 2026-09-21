@@ -19,6 +19,14 @@ export function getChatterboxServerVoices() {
   return discoveredVoices;
 }
 
+function validAudioFilename(filename) {
+  return (
+    typeof filename === 'string' &&
+    /^[^/\\]{1,128}\.(wav|mp3)$/i.test(filename) &&
+    ![...filename].some((char) => char.charCodeAt(0) < 32)
+  );
+}
+
 function normalizeVoices(data) {
   if (!Array.isArray(data) || data.length > MAX_VOICES) throw new Error('Chatterbox returned an invalid voice list.');
   const seen = new Set();
@@ -27,12 +35,7 @@ function normalizeVoices(data) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
     const filename = typeof item.filename === 'string' ? item.filename.trim() : '';
     const displayName = typeof item.display_name === 'string' ? item.display_name.trim() : '';
-    if (
-      !/^[^/\\]{1,128}\.(wav|mp3)$/i.test(filename) ||
-      [...filename].some((char) => char.charCodeAt(0) < 32) ||
-      seen.has(filename)
-    )
-      continue;
+    if (!validAudioFilename(filename) || seen.has(filename)) continue;
     seen.add(filename);
     voices.push({
       id: filename,
@@ -57,16 +60,8 @@ function abortError() {
   return new DOMException('aborted', 'AbortError');
 }
 
-function referenceFilename(filename) {
-  return (
-    typeof filename === 'string' &&
-    /^[^/\\]{1,128}\.(wav|mp3)$/i.test(filename) &&
-    ![...filename].some((char) => char.charCodeAt(0) < 32)
-  );
-}
-
 function normalizeReferenceFiles(data) {
-  if (!Array.isArray(data) || data.length > MAX_REFERENCE_FILES || !data.every(referenceFilename)) {
+  if (!Array.isArray(data) || data.length > MAX_REFERENCE_FILES || !data.every(validAudioFilename)) {
     throw new Error('Chatterbox returned an invalid reference-file list.');
   }
   return new Set(data);

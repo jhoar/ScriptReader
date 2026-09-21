@@ -187,7 +187,11 @@ test('reference revision changes upload filename and render identity', async () 
 test('malformed reference listing and rejected uploads never synthesize', async () => {
   const sample = new Float32Array(24000 * 5).fill(0.25);
   const profile = { id: 'studio-alice', renderRevision: 1 };
-  for (const listing of [new Response(JSON.stringify({ files: [] })), new Response(JSON.stringify([]))]) {
+  for (const listing of [
+    new Response(JSON.stringify({ files: [] })),
+    new Response(JSON.stringify(['../bad.wav'])),
+    new Response(JSON.stringify([])),
+  ]) {
     let synthesisCount = 0;
     const engine = makeEngine(
       async (url) => {

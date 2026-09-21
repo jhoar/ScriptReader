@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { ChatterboxServerEngine } from '../src/audio/chatterbox-server-engine.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { getVoicesForEngine } from '../src/audio/voice-catalog.js';
 import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { createResumeToastElement } from '../src/ui/resume-toast.js';
 import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
@@ -231,6 +232,32 @@ test('RunPod validation preserves keyboard focus through loading and success', a
     assert.match(modal.textContent, /Connected to RunPod/);
   } finally {
     globalThis.fetch = originalFetch;
+    removeDom(dom);
+  }
+});
+
+test('Local GPU voice cards disclose reference upload with or without a custom description', () => {
+  const dom = installDom();
+  try {
+    localStorage.setItem(
+      'scriptreader_chatterbox_voice_metadata',
+      JSON.stringify([
+        { id: 'studio-custom', name: 'Custom', description: 'Warm and soft', createdAt: 1, duration: 5 },
+        { id: 'studio-default', name: 'Default', createdAt: 2, duration: 5 },
+      ]),
+    );
+    const serverVoices = getVoicesForEngine(ENGINE_IDS.CHATTERBOX_SERVER);
+    for (const id of ['studio-custom', 'studio-default']) {
+      const description = serverVoices.find((voice) => voice.id === id)?.description;
+      assert.match(description, /Reference audio will be uploaded to the configured Chatterbox server when used/);
+      assert.doesNotMatch(description, /stored only on this device/);
+    }
+    assert.match(serverVoices.find((voice) => voice.id === 'studio-custom').description, /Warm and soft/);
+    assert.match(
+      getVoicesForEngine(ENGINE_IDS.CHATTERBOX).find((voice) => voice.id === 'studio-default').description,
+      /stored only on this device/,
+    );
+  } finally {
     removeDom(dom);
   }
 });

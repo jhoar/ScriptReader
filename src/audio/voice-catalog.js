@@ -647,10 +647,7 @@ export function getVoicesForEngine(engineId) {
       ...getChatterboxServerVoices(),
       ...listChatterboxVoices().map((voice) => ({
         ...voice,
-        description: voice.description.replace(
-          'stored only on this device',
-          'synced to the configured Chatterbox server when used',
-        ),
+        description: `${voice.description.replace(/ · stored only on this device$/, '')} · Reference audio will be uploaded to the configured Chatterbox server when used.`,
       })),
     ];
   }
