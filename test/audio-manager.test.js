@@ -57,6 +57,40 @@ function fakeEngine(overrides = {}) {
   };
 }
 
+test('changing the active server configuration discards units keyed to the old endpoint', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX_SERVER;
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX_SERVER, metered: false } });
+  manager.unitCache.set(0, [{ key: 'old-endpoint' }]);
+  manager._preparedStudioKeys.add('old-endpoint');
+  manager.prewarm = () => {};
+  manager.refreshEngineConfiguration(ENGINE_IDS.CHATTERBOX_SERVER);
+  assert.equal(manager.unitCache.size, 0);
+  assert.equal(manager._preparedStudioKeys.size, 0);
+});
+
+test('switching to Local GPU carries an existing Studio reference assignment', () => {
+  const storage = globalThis.localStorage;
+  const originalGetItem = storage.getItem;
+  storage.getItem = (key) =>
+    key === 'scriptreader_chatterbox_voice_metadata'
+      ? JSON.stringify([{ id: 'studio-alice', name: 'Alice', createdAt: 7, duration: 5 }])
+      : null;
+  try {
+    const manager = new ScreenplayAudioManager();
+    manager.engineId = ENGINE_IDS.CHATTERBOX_SERVER;
+    manager.characterAssignments.set('ALICE', {
+      voiceId: 'af_heart',
+      voiceIds: { [ENGINE_IDS.CHATTERBOX]: 'studio-alice' },
+    });
+    manager.stageOrder = ['ALICE'];
+    manager._ensureEngineVoices();
+    assert.equal(manager.characterAssignments.get('ALICE').voiceIds[ENGINE_IDS.CHATTERBOX_SERVER], 'studio-alice');
+  } finally {
+    storage.getItem = originalGetItem;
+  }
+});
+
 test('metered engines do not synthesize before Play', () => {
   const manager = new ScreenplayAudioManager();
   let requests = 0;

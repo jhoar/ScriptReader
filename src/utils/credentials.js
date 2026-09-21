@@ -21,6 +21,8 @@ import { readBoundedResponseJson } from './bounded-response.js';
 const OPENAI_KEY = 'scriptreader_openai_key_v1';
 const RUNPOD_KEY = 'scriptreader_runpod_key_v1';
 const RUNPOD_ENDPOINT_KEY = 'scriptreader_runpod_endpoint_v1';
+const CHATTERBOX_SERVER_ENDPOINT_KEY = 'scriptreader_chatterbox_server_endpoint_v1';
+export const DEFAULT_CHATTERBOX_SERVER_ENDPOINT = 'http://localhost:8004';
 const DEFAULT_RUNPOD_ENDPOINT = 'lp3hrmg85v80jm';
 const ENGINE_SETTINGS_KEY = 'scriptreader_engine_settings_v1';
 
@@ -93,6 +95,41 @@ export function saveEngineSettings(patch) {
     console.warn('Could not store engine settings:', err);
     return loadEngineSettings();
   }
+}
+
+export function normalizeChatterboxServerEndpoint(value) {
+  let url;
+  try {
+    url = new URL((value || '').trim());
+  } catch {
+    throw new Error('Enter a valid HTTP or HTTPS Chatterbox server URL.');
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== '/'
+  ) {
+    throw new Error('Enter a server URL with HTTP or HTTPS, a host, and no path or credentials.');
+  }
+  return url.origin;
+}
+
+export function loadChatterboxServerEndpoint() {
+  try {
+    return localStorage.getItem(CHATTERBOX_SERVER_ENDPOINT_KEY) || DEFAULT_CHATTERBOX_SERVER_ENDPOINT;
+  } catch {
+    return DEFAULT_CHATTERBOX_SERVER_ENDPOINT;
+  }
+}
+
+export function saveChatterboxServerEndpoint(value) {
+  const endpoint = normalizeChatterboxServerEndpoint(value);
+  localStorage.setItem(CHATTERBOX_SERVER_ENDPOINT_KEY, endpoint);
+  return endpoint;
 }
 
 export function hasCloudConsent() {

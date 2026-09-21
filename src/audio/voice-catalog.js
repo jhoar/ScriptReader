@@ -7,6 +7,7 @@
  * from upstream, so the two cannot drift apart.
  */
 
+import { getChatterboxServerVoices } from './chatterbox-server-engine.js';
 import { listChatterboxVoices } from './chatterbox-voice-store.js';
 import { ENGINE_IDS } from './engine-contract.js';
 import { byGradeDesc, CASTABLE_SCORE, gradeScore, isCastable, KOKORO_GRADES } from './voice-grades.js';
@@ -641,6 +642,15 @@ export const MISSING_CHATTERBOX_VOICE = Object.freeze({
 /** Every voice the given engine can actually speak with. */
 export function getVoicesForEngine(engineId) {
   if (engineId === ENGINE_IDS.OPENAI) return OPENAI_VOICE_CATALOG;
+  if (engineId === ENGINE_IDS.CHATTERBOX_SERVER) {
+    return [
+      ...getChatterboxServerVoices(),
+      ...listChatterboxVoices().map((voice) => ({
+        ...voice,
+        description: `${voice.description.replace(/ · stored only on this device$/, '')} · Reference audio will be uploaded to the configured Chatterbox server when used.`,
+      })),
+    ];
+  }
   if (engineId === ENGINE_IDS.CHATTERBOX) return listChatterboxVoices();
   if (engineId === ENGINE_IDS.RUNPOD) {
     const studioVoices = listChatterboxVoices();
@@ -692,7 +702,7 @@ export const CROSS_ENGINE_VOICE_MAP = Object.freeze({
 export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new Set()) {
   const pool = getVoicesForEngine(targetEngineId);
 
-  if (targetEngineId === ENGINE_IDS.CHATTERBOX) {
+  if (targetEngineId === ENGINE_IDS.CHATTERBOX || targetEngineId === ENGINE_IDS.CHATTERBOX_SERVER) {
     const unused = pool.find((voice) => !usedVoices.has(voice.id));
     return unused?.id || pool[0]?.id || '';
   }

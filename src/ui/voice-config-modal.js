@@ -41,7 +41,8 @@ export function createVoiceConfigModal({
   const engineId = audioManager.engineId;
   const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
   const isRunPod = engineId === ENGINE_IDS.RUNPOD;
-  const hasReferenceVoices = isStudio || isRunPod;
+  const isLocalGpu = engineId === ENGINE_IDS.CHATTERBOX_SERVER;
+  const hasReferenceVoices = isStudio || isRunPod || isLocalGpu;
   const isHybrid = isStudio && audioManager.hybridCasting;
   const narratorEngineId = isHybrid ? ENGINE_IDS.KOKORO : engineId;
   let enginePool = getVoicesForEngine(engineId);
@@ -133,7 +134,8 @@ export function createVoiceConfigModal({
   /** This character's voice under the active engine, falling back to the legacy field. */
   function voiceIdOf(assignment) {
     const candidate = (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
-    if ((isStudio || isRunPod) && !enginePool.some((voice) => voice.id === candidate)) return enginePool[0]?.id || '';
+    if ((isStudio || isRunPod || isLocalGpu) && !enginePool.some((voice) => voice.id === candidate))
+      return enginePool[0]?.id || '';
     return candidate;
   }
 
@@ -143,6 +145,13 @@ export function createVoiceConfigModal({
    * is instead of inventing a tier.
    */
   function qualityBadge(voiceId, forEngineId = engineId) {
+    if (forEngineId === ENGINE_IDS.CHATTERBOX_SERVER) {
+      return voiceId
+        ? voiceId.startsWith('studio-')
+          ? 'Studio reference · Local GPU'
+          : 'Predefined · Local GPU'
+        : 'Voice needed';
+    }
     if (forEngineId === ENGINE_IDS.CHATTERBOX) return voiceId ? 'Studio reference' : 'Reference needed';
     if (forEngineId === ENGINE_IDS.RUNPOD) {
       if (
@@ -165,11 +174,14 @@ export function createVoiceConfigModal({
 
   function buildVoiceOptions(selectedId, pool = enginePool) {
     if (pool.length === 0) {
-      return '<option value="">Add a reference voice first</option>';
+      return isLocalGpu
+        ? '<option value="">Connect to the server to discover voices</option>'
+        : '<option value="">Add a reference voice first</option>';
     }
     const femaleVoices = pool.filter((v) => v.sex === 'Female');
     const maleVoices = pool.filter((v) => v.sex === 'Male');
     const neutralVoices = pool.filter((v) => v.sex === 'Neutral');
+    const unspecifiedVoices = pool.filter((v) => !['Female', 'Male', 'Neutral'].includes(v.sex));
 
     const buildGroup = (label, voices) =>
       voices.length === 0
@@ -179,7 +191,7 @@ export function createVoiceConfigModal({
         ${voices
           .map(
             (v) => `
-          <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
+          <option value="${escapeHtml(v.id)}" ${v.id === selectedId ? 'selected' : ''}>
             ${escapeHtml(v.name)} (${escapeHtml(v.sex)} ${escapeHtml(v.ageGroup)} • ${escapeHtml(v.accent)}) - ${escapeHtml(v.tone.split(',')[0])}
           </option>
         `,
@@ -191,7 +203,8 @@ export function createVoiceConfigModal({
     return (
       buildGroup('Female voices', femaleVoices) +
       buildGroup('Male voices', maleVoices) +
-      buildGroup('Neutral voices', neutralVoices)
+      buildGroup('Neutral voices', neutralVoices) +
+      buildGroup('Unspecified voices', unspecifiedVoices)
     );
   }
 
@@ -233,7 +246,7 @@ export function createVoiceConfigModal({
   }
 
   function applyRecommendedCast() {
-    if (isStudio && enginePool.length === 0) return;
+    if ((isStudio || isLocalGpu) && enginePool.length === 0) return;
     const localNarrator = getDefaultNarratorVoice().id;
     const activeIsHybrid = isStudio && audioManager.hybridCasting;
     const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
@@ -416,20 +429,24 @@ export function createVoiceConfigModal({
                   <strong>${
                     engineId === ENGINE_IDS.OPENAI
                       ? 'OpenAI cloud voices'
-                      : isRunPod
-                        ? 'RunPod Serverless GPU (L40S)'
-                        : isStudio
-                          ? 'Studio Local · Chatterbox'
-                          : 'Kokoro local voices'
+                      : isLocalGpu
+                        ? 'Local GPU · Chatterbox Server'
+                        : isRunPod
+                          ? 'RunPod Serverless GPU (L40S)'
+                          : isStudio
+                            ? 'Studio Local · Chatterbox'
+                            : 'Kokoro local voices'
                   }</strong>
                   <small>${
                     engineId === ENGINE_IDS.OPENAI
                       ? 'Dialogue is sent to OpenAI for synthesis.'
-                      : isRunPod
-                        ? 'High-speed Chatterbox and Kokoro neural synthesis on dedicated NVIDIA L40S GPUs.'
-                        : isStudio
-                          ? 'Highest-quality local voices cloned from private reference recordings.'
-                          : 'Audio is generated on this device. Your screenplay stays local.'
+                      : isLocalGpu
+                        ? 'Predefined server voices and Studio reference voices run on your GPU.'
+                        : isRunPod
+                          ? 'High-speed Chatterbox and Kokoro neural synthesis on dedicated NVIDIA L40S GPUs.'
+                          : isStudio
+                            ? 'Highest-quality local voices cloned from private reference recordings.'
+                            : 'Audio is generated on this device. Your screenplay stays local.'
                   }</small>
                 </span>
               </div>
@@ -448,7 +465,7 @@ export function createVoiceConfigModal({
                       ? `${refCount} reference voice${refCount === 1 ? '' : 's'} available`
                       : 'Add your first reference voice';
                   })()}</strong>
-                  <small>Use a clean 5–10 second recording with one speaker and little background noise. Stored only in this browser.</small>
+                  <small>Use a clean 5–10 second recording with one speaker and little background noise. ${isLocalGpu ? 'The reference is uploaded to your configured Chatterbox server when used.' : 'Stored only in this browser.'}</small>
                 </div>
                 <div class="studio-voice-actions">
                   <button id="btn-find-studio-voice" class="btn btn-primary" type="button">

@@ -193,7 +193,8 @@ export function pickEngineVoiceForCharacter(
   characterName,
   { introduction, gender, sampleLine, engineId, usedVoices = new Set(), fallbackVoiceId = '' } = {},
 ) {
-  const clonesOwnPool = engineId === ENGINE_IDS.CHATTERBOX || engineId === ENGINE_IDS.RUNPOD;
+  const clonesOwnPool =
+    engineId === ENGINE_IDS.CHATTERBOX || engineId === ENGINE_IDS.RUNPOD || engineId === ENGINE_IDS.CHATTERBOX_SERVER;
   if (clonesOwnPool) {
     const traits = characterCastingTraits(characterName, { introduction, gender, sampleLine });
     if (!traits.isNarrator) {

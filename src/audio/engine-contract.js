@@ -16,6 +16,7 @@
 export const ENGINE_IDS = {
   KOKORO: 'kokoro',
   CHATTERBOX: 'chatterbox:onnx-community/chatterbox-ONNX',
+  CHATTERBOX_SERVER: 'chatterbox:local-server',
   RUNPOD: 'runpod:chatterbox',
   OPENAI: 'openai:gpt-4o-mini-tts',
   WEB_SPEECH: 'web_speech',
