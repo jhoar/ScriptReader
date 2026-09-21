@@ -13,6 +13,10 @@ const MAX_REFERENCE_FILES = 512;
 const MAX_REFERENCE_SECONDS = 30;
 const REFERENCE_SAMPLE_RATE = 24000;
 const MAX_REFERENCE_CACHE_ENTRIES = 128;
+const DEFAULT_RETRY_COUNT = 2;
+const DEFAULT_RETRY_DELAY_MS = 750;
+const MAX_RETRY_COUNT = 5;
+const MAX_RETRY_DELAY_MS = 30_000;
 let discoveredVoices = [];
 
 export function getChatterboxServerVoices() {
@@ -58,6 +62,24 @@ function normalizeVoices(data) {
 
 function abortError() {
   return new DOMException('aborted', 'AbortError');
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function normalizeReferenceFiles(data) {
@@ -118,6 +140,9 @@ export class ChatterboxServerEngine {
     publishVoices = true,
     getReferenceSample = getChatterboxVoiceSample,
     getStudioVoices = listChatterboxVoices,
+    retryCount = DEFAULT_RETRY_COUNT,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    sleepImpl = sleep,
   } = {}) {
     this.getEndpoint = getEndpoint;
     this.fetch = fetchImpl;
@@ -125,6 +150,9 @@ export class ChatterboxServerEngine {
     this.publishVoices = publishVoices;
     this.getReferenceSample = getReferenceSample;
     this.getStudioVoices = getStudioVoices;
+    this.retryCount = Math.max(0, Math.min(MAX_RETRY_COUNT, Math.floor(Number(retryCount) || 0)));
+    this.retryDelayMs = Math.max(0, Math.min(MAX_RETRY_DELAY_MS, Number(retryDelayMs) || 0));
+    this.sleep = sleepImpl;
     this.isReady = false;
     this.isLoading = false;
     this.phase = 'idle';
@@ -304,6 +332,32 @@ export class ChatterboxServerEngine {
     return filename;
   }
 
+  async _synthesizeWithRetry(endpoint, payload, signal, current) {
+    let lastError;
+    for (let attempt = 0; attempt <= this.retryCount; attempt++) {
+      if (!current()) throw abortError();
+      try {
+        return await this.fetch(`${endpoint}/tts`, {
+          method: 'POST',
+          signal,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        if (signal.aborted || !current()) throw abortError();
+        if (!(error instanceof TypeError)) throw error;
+        lastError = error;
+        if (attempt >= this.retryCount) break;
+        await this.sleep(this.retryDelayMs, signal);
+      }
+    }
+    const error = new Error(
+      `Could not reach Chatterbox after ${this.retryCount + 1} attempts. Check that the local server is still running.`,
+    );
+    error.cause = lastError;
+    throw error;
+  }
+
   async _render(entry) {
     const { unit, controller, generation } = entry;
     const signal = controller.signal;
@@ -329,18 +383,18 @@ export class ChatterboxServerEngine {
     const predefined = this.voices.some((voice) => voice.id === unit.voiceId);
     let referenceName = predefined ? null : await this._syncReferenceVoice(unit, endpoint, signal, current);
     const synthesize = () =>
-      this.fetch(`${endpoint}/tts`, {
-        method: 'POST',
-        signal,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+      this._synthesizeWithRetry(
+        endpoint,
+        {
           text: unit.text,
           voice_mode: predefined ? 'predefined' : 'clone',
           ...(predefined ? { predefined_voice_id: unit.voiceId } : { reference_audio_filename: referenceName }),
           output_format: 'wav',
           split_text: false,
-        }),
-      });
+        },
+        signal,
+        current,
+      );
     let response = await synthesize();
     if (!predefined && response.status === 404 && current()) {
       await response.body?.cancel?.();
