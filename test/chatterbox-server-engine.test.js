@@ -100,6 +100,103 @@ test('synthesis sends predefined voice and decodes WAV for the scheduler', async
   }
 });
 
+test('transient synthesis fetch failures retry with configured count and spacing', async () => {
+  const originalWindow = globalThis.window;
+  const delays = [];
+  let synthesisCalls = 0;
+  globalThis.window = {
+    AudioContext: class {
+      async decodeAudioData() {
+        const samples = new Float32Array(24000);
+        samples[0] = 0.5;
+        return {
+          duration: 1,
+          length: 24000,
+          sampleRate: 24000,
+          numberOfChannels: 1,
+          getChannelData: () => samples,
+        };
+      }
+    },
+  };
+  try {
+    const engine = makeEngine(
+      async (url) => {
+        if (!url.endsWith('/tts')) return voiceResponse();
+        synthesisCalls++;
+        if (synthesisCalls < 3) throw new TypeError('Failed to fetch');
+        return new Response(wav());
+      },
+      {
+        retryCount: 2,
+        retryDelayMs: 1250,
+        sleepImpl: async (delay) => delays.push(delay),
+      },
+    );
+    await engine.init();
+    assert.equal((await engine.request(unit())).duration, 1);
+    assert.equal(synthesisCalls, 3);
+    assert.deepEqual(delays, [1250, 1250]);
+    engine.release();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('HTTP synthesis failures are authoritative and are not retried', async () => {
+  let synthesisCalls = 0;
+  const engine = makeEngine(
+    async (url) => {
+      if (!url.endsWith('/tts')) return voiceResponse();
+      synthesisCalls++;
+      return new Response('', { status: 503 });
+    },
+    { retryCount: 5, retryDelayMs: 0 },
+  );
+  await engine.init();
+  await assert.rejects(engine.request(unit()), /HTTP 503/);
+  assert.equal(synthesisCalls, 1);
+  engine.release();
+});
+
+test('dropping a request during retry spacing prevents another synthesis attempt', async () => {
+  let synthesisCalls = 0;
+  const engine = makeEngine(
+    async (url) => {
+      if (!url.endsWith('/tts')) return voiceResponse();
+      synthesisCalls++;
+      throw new TypeError('Failed to fetch');
+    },
+    { retryCount: 3, retryDelayMs: 10_000 },
+  );
+  await engine.init();
+  const request = engine.request(unit());
+  request.catch(() => {});
+  for (let i = 0; i < 20 && synthesisCalls === 0; i++) await tick();
+  assert.equal(synthesisCalls, 1);
+  engine.dropPendingExcept([]);
+  await assert.rejects(request, (error) => error.name === 'AbortError');
+  await tick();
+  assert.equal(synthesisCalls, 1);
+  engine.release();
+});
+
+test('exhausted transport retries report the configured attempt count', async () => {
+  let synthesisCalls = 0;
+  const engine = makeEngine(
+    async (url) => {
+      if (!url.endsWith('/tts')) return voiceResponse();
+      synthesisCalls++;
+      throw new TypeError('Failed to fetch');
+    },
+    { retryCount: 1, retryDelayMs: 0 },
+  );
+  await engine.init();
+  await assert.rejects(engine.request(unit()), /after 2 attempts/);
+  assert.equal(synthesisCalls, 2);
+  engine.release();
+});
+
 test('Studio reference is uploaded once and used in clone synthesis', async () => {
   const sample = new Float32Array(24000 * 5).fill(0.25);
   const studioVoice = { id: 'studio-alice', renderRevision: 7 };
